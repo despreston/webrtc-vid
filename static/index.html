@@ -1,0 +1,185 @@
+<html>
+<head>
+  <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+  <video id='localVid' autoplay muted></video>
+  <video id='remoteVid' autoplay></video>
+  <div>
+    <button id="callButton">Call</button>
+    <button id="hangupButton">Hang Up</button>
+  </div>
+
+  <script>
+  (async () => {
+    const socket = io('localhost:9001');
+    let localVideoEl, remoteVideoEl, localStream, conn;
+    let callBtn = document.getElementById('callButton');
+    let hangUpBtn = document.getElementById('hangupButton');
+
+    socket.on('incoming_icecandidate', onIncomingIceCandidate);
+    socket.on('offer', receiveCall);
+    socket.on('answer', onAnswer);
+    socket.on('hangup', onHangup);
+
+    /**
+     * Relay a local ICE candidate to the server
+     * If event.candidate is null, all ICE candidates have been sent
+     * @param {RTCPeerConnectionIceEvent}
+     */
+    function onIceCandidate (event) {
+      if (event.candidate) {
+        console.log("Sending ICE candidate to server");
+        socket.emit('icecandidate', event.candidate);
+      }
+    }
+
+    /**
+     * Add ICE Candidates to the connection
+     * @param {RTCIceCandidate} candidate
+     */
+    function onIncomingIceCandidate (candidate) {
+      console.log("Received ICE candidate");
+      conn.addIceCandidate(new RTCIceCandidate(candidate));
+    }
+
+    /**
+     * New video stream received
+     * @param 
+     */
+    function onAddStream (event) {
+      console.log("Received onaddstream event ");
+      remoteVideoEl.srcObject = event.stream;
+    }
+
+    /**
+     * Create and emit an offer
+     */
+    async function createOffer () {
+      console.log('creating and sending a call offer');
+
+      const offer = await conn.createOffer();
+      await conn.setLocalDescription(offer);
+      socket.emit('offer', conn.localDescription);
+    }
+
+    /**
+     * Start local video
+     */
+    async function loadLocalVid () {
+      try {
+        console.log('starting local video');
+
+        // Ask the user for permission to user camera/microphone
+        localStream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: true
+        });
+
+        localVideoEl = document.getElementById('localVid');
+        remoteVideoEl = document.getElementById('remoteVid');
+        
+        // Set the source of the el to our local video stream
+        localVideoEl.srcObject = localStream;
+
+      } catch (e) {
+        console.log("Error loading local video", e);
+      }
+    }
+
+    /**
+     * Start webrtc connection
+     */
+    async function createConnection () {
+      console.log('creating a new webrtc connection');
+
+      conn = new RTCPeerConnection();
+      conn.addStream(localStream);
+      conn.onicecandidate = onIceCandidate;
+      conn.onaddstream = onAddStream;
+    }
+    
+    /**
+     * Start a new call
+     */
+    async function call () {
+      console.log('starting a call');
+
+      // has a call already been started?
+      if (!conn) {
+        await createConnection();
+        await createOffer();
+      }
+    }
+
+    /**
+     * Clean up and clear all connection stuff
+     */
+    async function onHangup () {
+      console.log("hanging up");
+
+      if (conn) {
+        if (remoteVideoEl.srcObject) {
+          remoteVideoEl.srcObject.getTracks().forEach(track => track.stop());
+          remoteVideoEl.srcObject = null;
+        }
+
+        conn.close();
+        conn = null;
+      }
+    }
+
+    /**
+     * Receiving an answer from the callee
+     * @param {RTCSessionDescription} remoteDescription
+     */
+    async function onAnswer (remoteDescription) {
+      console.log("Received call answer");
+
+      await conn.setRemoteDescription(
+        new RTCSessionDescription(remoteDescription)
+      );
+    }
+
+    /**
+     * Start a 'hang up' sequence
+     */
+    function end () {
+      console.log('you ended the call');
+
+      onHangup();
+      socket.emit('hangup');
+    }
+
+    /**
+     * Handle receiving a call
+     * @param {RTCSessionDescription} remoteDescription
+     * @return {Promise}
+     */
+    async function receiveCall (remoteDescription) {
+      console.log("Received call offer");
+
+      // initiate connection
+      await createConnection();
+
+      // set the description that was sent from the caller
+      await conn.setRemoteDescription(
+        new RTCSessionDescription(remoteDescription)
+      );
+
+      // Set our own description
+      const answer = await conn.createAnswer();
+      await conn.setLocalDescription(answer);
+
+      // Send the local description to the caller
+      socket.emit('answer', conn.localDescription);
+    }
+
+    await loadLocalVid();
+    callBtn.addEventListener('click', call, false);
+    hangUpBtn.addEventListener('click', end, false);
+
+  })();
+  </script>
+</body>
+</html>
